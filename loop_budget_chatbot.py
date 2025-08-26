@@ -1,110 +1,175 @@
-
 import streamlit as st
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 
-# === PAGE CONFIG ===
 st.set_page_config(page_title="LOOP Budget Assistant", layout="wide")
 
-# === SAMPLE DATA ===
-def load_budget_data():
-    return pd.DataFrame({
-        "category": ["Groceries", "Transport", "Entertainment", "Utilities", "Loan Repayment", "Savings"],
-        "budgeted": [15000, 8000, 5000, 7000, 12000, 5000],
-        "actual_spent": [14500, 9200, 3000, 7100, 13500, 2000]
-    })
+# === DATA LOADING ===
+@st.cache_data
+def load_data():
+    categories = {
+        "Housing": ["Rent", "Internet", "Water", "Electricity"],
+        "Transport": ["Fuel", "Car Repairs", "Public Transport", "Uber"],
+        "Utilities": ["Garbage", "Cleaning", "Phone Bill"],
+        "Food": ["Groceries", "Dining Out", "Takeout"],
+        "Goals (Savings)": ["LOOP Goal", "Emergency Fund"],
+        "Debts (Loan)": ["LOOP FLEX", "Term Loan"],
+        "Miscellaneous": ["Gifts", "Unexpected", "Other"]
+    }
 
-def evaluate_budget_status(row):
-    pct = row["actual_spent"] / row["budgeted"]
-    if pct < 0.75:
-        return "🟢 On Track"
-    elif pct < 1.0:
-        return "🟡 Near Limit"
-    return "🔴 Over Budget"
+    data = []
+    np.random.seed(42)
+    for period in ["current", "last_month", "peers"]:
+        for cat, subs in categories.items():
+            for sub in subs:
+                budget = np.random.randint(4000, 18000)
+                multiplier = np.random.uniform(0.8, 1.2) if period == "last_month" else \
+                             np.random.uniform(0.85, 1.15) if period == "peers" else 1
+                actual = int(np.random.randint(int(budget * 0.5), int(budget * 1.5)) * multiplier)
+                data.append({
+                    "period": period,
+                    "category": cat,
+                    "subcategory": sub,
+                    "budgeted": budget,
+                    "actual_spent": actual
+                })
+    df = pd.DataFrame(data)
+    df["spent_pct"] = (df["actual_spent"] / df["budgeted"]).round(2)
+    df["status"] = df.apply(lambda r: "🟢 On Track" if r["spent_pct"] < 0.75 else "🟡 Near Limit"
+                            if r["spent_pct"] < 1.0 else "🔴 Over Budget" if r["period"] == "current" else "", axis=1)
+    return df
 
-def loop_tip(row):
-    pct = row["actual_spent"] / row["budgeted"]
-    category = row["category"]
-    if category == "Loan Repayment" and pct < 1.0:
-        return "You're close to completing your LOOP loan repayment — great job staying on track!"
-    if category == "Savings" and pct < 0.5:
-        return "Consider setting up a LOOP Goal to automate your savings this month."
-    if pct > 1.0:
-        return f"You've exceeded your {category} budget. Consider using LOOP FLEX to balance your spending."
-    if pct >= 0.8:
-        return f"You're nearing your limit in {category}. A LOOP loan could help smooth your finances."
-    if pct < 0.5 and category not in ["Savings", "Loan Repayment"]:
-        return f"You're under budget in {category}. Could this be an opportunity to grow your LOOP Goal?"
-    return "You're on track. Keep it up."
+df = load_data()
 
-def interpret_question(message, df):
-    message = message.lower()
-    for _, row in df.iterrows():
-        if row["category"].lower() in message:
-            response = f"You've spent KES {int(row['actual_spent']):,} out of your KES {int(row['budgeted']):,} budget for {row['category']}. "
-            response += f"That's {int(row['spent_pct'] * 100)}% — {row['status']}. "
-            response += f"💡 {row['loop_tip']}"
-            return response
-    return "I'm not sure which category you're referring to. Please ask about a specific budget category like Transport, Savings, or Loan Repayment."
+# === RESPONSE FUNCTION ===
+def respond_to_question(q):
+    q = q.lower()
+    curr = df[df["period"] == "current"]
+    last = df[df["period"] == "last_month"]
+    peer = df[df["period"] == "peers"]
 
-# === BUDGET DATA PROCESSING ===
-df = load_budget_data()
-df["spent_pct"] = (df["actual_spent"] / df["budgeted"]).round(2)
-df["status"] = df.apply(evaluate_budget_status, axis=1)
-df["loop_tip"] = df.apply(loop_tip, axis=1)
+    if "last month" in q:
+        diffs = []
+        for cat in curr["category"].unique():
+            c = curr[curr["category"] == cat]["actual_spent"].sum()
+            l = last[last["category"] == cat]["actual_spent"].sum()
+            if c > l:
+                diffs.append(f"{cat} ↑ (+{c - l:,} KES)")
+            elif l > c:
+                diffs.append(f"{cat} ↓ ({l - c:,} KES)")
+        return "📊 **Spending vs Last Month:**\\n" + ", ".join(diffs)
 
-# === NAVIGATION ===
-tab = st.sidebar.radio("Navigate", ["📊 Budget Overview", "💬 Chat Assistant"])
+    if "peer" in q or "compare" in q:
+        diffs = []
+        for cat in curr["category"].unique():
+            c = curr[curr["category"] == cat]["actual_spent"].sum()
+            p = peer[peer["category"] == cat]["actual_spent"].sum()
+            if abs(c - p) > 2000:
+                label = "higher" if c > p else "lower"
+                diffs.append(f"{cat} ({label} by {abs(c - p):,} KES)")
+        return "👥 **Compared to Peers:**\\n" + ", ".join(diffs) if diffs else "You're spending is similar to peers."
 
-# === BUDGET OVERVIEW TAB ===
-if tab == "📊 Budget Overview":
-    st.title("📊 Monthly Budget Tracker")
+    if "most" in q or "highest" in q or "subcategory" in q:
+        top = curr.sort_values("actual_spent", ascending=False).iloc[0]
+        return f"💸 Top subcategory: **{top['subcategory']}** under **{top['category']}** ({top['actual_spent']:,} KES)"
 
-    for _, row in df.iterrows():
-        st.markdown(f"**{row['category']}** — {row['status']}")
+    if "surplus" in q or "left" in q:
+        total_budget = curr["budgeted"].sum()
+        total_spent = curr["actual_spent"].sum()
+        surplus = total_budget - total_spent
+        if surplus > 0:
+            return f"💰 You have a surplus of {surplus:,} KES. Consider boosting your LOOP Goal or repaying a loan."
+        else:
+            return "⚠️ You are over budget. Consider using LOOP FLEX to manage cashflow."
+
+    return "❓ Try asking about last month, peers, subcategories, or surplus."
+
+# === TREND VISUALS ===
+def show_chart():
+    df_viz = df[df["period"].isin(["current", "last_month", "peers"])].copy()
+    agg = df_viz.groupby(["category", "period"])["actual_spent"].sum().reset_index()
+    pivot_df = agg.pivot(index="category", columns="period", values="actual_spent").fillna(0)
+    pivot_df = pivot_df[["last_month", "current", "peers"]]
+
+    st.subheader("📈 Trend Chart: Category Spending")
+    st.caption("Compare current month spending to last month and peer average.")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    pivot_df.plot(kind="bar", ax=ax)
+    ax.set_ylabel("KES")
+    ax.set_title("Spending Trends: Current vs Last Month vs Peers")
+    ax.legend(title="Period")
+    st.pyplot(fig)
+
+# === PAGE NAVIGATION ===
+tab = st.sidebar.radio("Navigate", ["📊 Tracker", "💬 Chat Assistant"])
+
+# === TRACKER TAB ===
+if tab == "📊 Tracker":
+    st.title("📊 Budget Tracker")
+    show_chart()
+
+    cat = st.selectbox("Choose a Category", sorted(df[df["period"] == "current"]["category"].unique()))
+    view = df[(df["category"] == cat) & (df["period"] == "current")]
+
+    for _, row in view.iterrows():
+        st.markdown(f"### {row['subcategory']}")
+        st.markdown(f"**Status:** {row['status']}")
         st.progress(min(row["spent_pct"], 1.0))
         st.caption(f"Spent: {int(row['actual_spent'])} / {int(row['budgeted'])} KES")
-        st.info(row["loop_tip"])
+        if row["subcategory"].lower() in ["loop goal", "emergency fund"]:
+            st.info("💡 Boost your LOOP Goal to grow savings." if row["spent_pct"] < 0.5 else "🚀 Great savings progress!")
+        elif row["subcategory"].lower() in ["loop flex", "term loan"]:
+            st.info("💡 Consider early repayment to access new LOOP loan." if row["spent_pct"] >= 1.0 else "🕒 Stay on track with your loan.")
+        elif row["spent_pct"] > 1.0:
+            st.info(f"⚠️ Over budget on {row['subcategory']}. Consider LOOP FLEX to cover this area.")
+        else:
+            st.info("👍 Well managed. Consider redirecting extra to LOOP Goals.")
 
-# === CHAT ASSISTANT TAB ===
+# === CHATBOT TAB ===
 elif tab == "💬 Chat Assistant":
-    st.title("💬 LOOP Chat Assistant")
+    st.title("💬 LOOP Trend Chat Assistant")
 
     if "chat" not in st.session_state:
-        st.session_state.chat = []
-        st.session_state.chat.append(("bot", "Hi! I'm your LOOP Budget Assistant. Ask me anything or choose a quick question below."))
+        st.session_state.chat = [("bot", "Hi! Ask me about your spending trends, surplus, peer comparisons, or top categories.")]
 
-    st.subheader("🧾 Budget Summary (Top 3)")
-    for _, row in df.sort_values("spent_pct", ascending=False).head(3).iterrows():
-        st.markdown(f"- **{row['category']}**: {row['status']} — {int(row['spent_pct'] * 100)}% used")
-
-    st.markdown("---")
     for sender, msg in st.session_state.chat:
-        role = "🤖 LOOP Assistant" if sender == "bot" else "🧍 You"
-        st.markdown(f"**{role}:** {msg.replace(chr(10), ' ')}")  # Clean display
+        label = "🤖 LOOP Assistant" if sender == "bot" else "🧍 You"
+        cleaned_msg = msg.replace("\n", " ").replace("\\n", " ")
+        st.markdown(f"**{label}:** {cleaned_msg}")
 
-    # === PRESET RADIO PROMPTS ===
-    st.markdown("**Quick Questions:**")
-    options = [
-        "How much have I spent on Transport?",
-        "What’s my status on Savings?",
-        "Have I exceeded my Loan Repayment budget?"
-    ]
-    selected_question = st.radio("Choose a question to ask:", options, index=0, key="radio_question")
-    if st.button("Ask Selected Question"):
-        st.session_state.chat.append(("user", selected_question))
-        reply = interpret_question(selected_question, df)
+
+    st.markdown("#### 🔘 Quick Questions:")
+    cols = st.columns(3)
+    q1 = "How does this month compare to last month?"
+    q2 = "How do I compare to peers?"
+    q3 = "Which subcategory used the most money?"
+
+    if cols[0].button(q1):
+        st.session_state.chat.append(("user", q1))
+        reply = respond_to_question(q1)
         st.session_state.chat.append(("bot", reply))
         st.rerun()
 
-    # === ADVANCED TEXT INPUT ===
+    if cols[1].button(q2):
+        st.session_state.chat.append(("user", q2))
+        reply = respond_to_question(q2)
+        st.session_state.chat.append(("bot", reply))
+        st.rerun()
+
+    if cols[2].button(q3):
+        st.session_state.chat.append(("user", q3))
+        reply = respond_to_question(q3)
+        st.session_state.chat.append(("bot", reply))
+        st.rerun()
+
     st.markdown("---")
-    with st.form("chat_form", clear_on_submit=True):
-        user_input = st.text_input("Or type your own question:")
-        submitted = st.form_submit_button("Send")
+    with st.form("ask_trend", clear_on_submit=True):
+        user_q = st.text_input("Ask a trend question:")
+        send = st.form_submit_button("Send")
 
-    if submitted and user_input:
-        st.session_state.chat.append(("user", user_input))
-        reply = interpret_question(user_input, df)
+    if send and user_q:
+        st.session_state.chat.append(("user", user_q))
+        reply = respond_to_question(user_q)
         st.session_state.chat.append(("bot", reply))
         st.rerun()
-
