@@ -66,6 +66,41 @@ summary = current_df.groupby("category").agg({
 }).reset_index()
 summary["spent_pct"] = summary["actual_spent"] / summary["budgeted"]
 summary["advice"] = summary.apply(lambda r: get_category_advice(r["spent_pct"], r["category"]), axis=1)
+summary["status"] = summary["spent_pct"].apply(
+    lambda x: "⚪ Well Below" if x < 0.5 else
+              "🟢 On Track" if x < 0.75 else
+              "🟡 Near Limit" if x <= 1.0 else
+              "🔴 Over Budget"
+)
+
+# === MOBILE STYLE INJECTOR ===
+def inject_mobile_tracker(summary_df, current_df):
+    emoji_map = {
+        "Housing": "🏠", "Transport": "🚗", "Utilities": "💡",
+        "Food": "🍽️", "Goals (Savings)": "🎯", "Debts (Loan)": "💳", "Miscellaneous": "📦"
+    }
+
+    st.markdown("#### 💼 Income Proxy")
+    income_proxy = summary_df["budgeted"].sum()
+    spent_total = summary_df["actual_spent"].sum()
+    st.progress(spent_total / income_proxy)
+    st.caption(f"Total Budget: KES {int(income_proxy):,} | Spent: KES {int(spent_total):,}")
+
+    st.markdown("### 📂 Spending Categories")
+    for _, row in summary_df.iterrows():
+        cat = row["category"]
+        spent = int(row["actual_spent"])
+        budget = int(row["budgeted"])
+        pct = row["spent_pct"]
+        status = row["status"]
+        advice = row["advice"]
+        icon = emoji_map.get(cat, "📁")
+        with st.container():
+            st.markdown(f"### {icon} {cat}")
+            st.caption(f"**KES {spent:,} / KES {budget:,} ({int(pct*100)}%)**")
+            st.progress(min(pct, 1.0))
+            st.markdown(f"**Status:** {status}")
+            st.markdown(f"💡 *{advice}*")
 
 # === CHATBOT RESPONSE LOGIC ===
 def respond_to_question(q):
@@ -138,9 +173,10 @@ tab = st.sidebar.radio("Navigate", ["📊 Tracker", "💬 Chat Assistant"])
 if tab == "📊 Tracker":
     st.title("📊 Monthly Budget Tracker")
 
+    inject_mobile_tracker(summary, current_df)
+
     selected_cat = st.selectbox("Choose a category to view breakdown:", sorted(current_df["category"].unique()))
 
-    # Trend chart
     st.markdown("### 📈 Trend Chart")
     compare_df = df[df["category"] == selected_cat].groupby("period")["actual_spent"].sum().reindex(["last_month", "current", "peers"])
     fig, ax = plt.subplots(figsize=(6, 3))
@@ -149,12 +185,10 @@ if tab == "📊 Tracker":
     ax.set_title(f"{selected_cat} — Spending Trend")
     st.pyplot(fig)
 
-    # Category insight
     st.markdown("###  Category Insight")
     advice = summary[summary["category"] == selected_cat]["advice"].values[0]
     st.info(advice)
 
-    # Subcategory progress
     st.subheader(f"📂 Subcategories in {selected_cat}")
     filtered = current_df[current_df["category"] == selected_cat]
     for _, row in filtered.iterrows():
@@ -173,7 +207,6 @@ elif tab == "💬 Chat Assistant":
         role = "🤖 LOOP Assistant" if sender == "bot" else "🧍 You"
         st.markdown(f"**{role}:** {msg.replace(chr(10), ' ')}")
 
-    # Quick questions
     st.markdown("#### 🔘 Quick Questions:")
     prompts = [
         "How does this month compare to last month?",
@@ -190,7 +223,6 @@ elif tab == "💬 Chat Assistant":
             st.session_state.chat.append(("bot", reply))
             st.rerun()
 
-    # Free-form input
     st.markdown("---")
     with st.form("chat_form", clear_on_submit=True):
         user_q = st.text_input("Ask a trend question:")
@@ -200,3 +232,4 @@ elif tab == "💬 Chat Assistant":
         reply = respond_to_question(user_q)
         st.session_state.chat.append(("bot", reply))
         st.rerun()
+
